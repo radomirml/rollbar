@@ -149,7 +149,7 @@ func initChannel() {
 
 	go func() {
 		for body := range bodyChannel {
-			post(body)
+			post(body, nil)
 			waitGroup.Done()
 		}
 	}()
@@ -164,7 +164,7 @@ func push(body map[string]interface{}) {
 }
 
 // POST the given JSON body to Rollbar synchronously.
-func post(body map[string]interface{}) {
+func post(body map[string]interface{}, httpClient *http.Client) {
 	if len(Token) == 0 {
 		stderr("Token is empty")
 		return
@@ -176,7 +176,11 @@ func post(body map[string]interface{}) {
 		return
 	}
 
-	resp, err := http.Post(Endpoint, "application/json", bytes.NewReader(jsonBody))
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+
+	resp, err := httpClient.Post(Endpoint, "application/json", bytes.NewReader(jsonBody))
 	if err != nil {
 		stderr(fmt.Sprintf("Rollbar POST failed: %s", err.Error()))
 		return
@@ -184,4 +188,30 @@ func post(body map[string]interface{}) {
 		stderr(fmt.Sprintf("Rollbar response: %s", resp.Status))
 	}
 	defer resp.Body.Close()
+}
+
+type Client struct {
+	httpClient *http.Client
+}
+
+func (c *Client) Error(level string, err error) {
+	c.ErrorWithStackSkip(level, err, 1)
+}
+
+func (c *Client) ErrorWithStackSkip(level string, err error, skip int) {
+
+	body := buildBody(level, err.Error())
+	data := body["data"].(map[string]interface{})
+	data["body"] = errorBody(err, skip)
+
+	go post(body, c.httpClient)
+}
+
+func (c *Client) Message(level string, msg string) {
+
+	body := buildBody(level, msg)
+	data := body["data"].(map[string]interface{})
+	data["body"] = messageBody(msg)
+
+	go post(body, c.httpClient)
 }
