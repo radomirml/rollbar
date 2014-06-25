@@ -8,10 +8,13 @@ Keep in mind that Go's `error` type doesn't contain stack trace
 information. `go-rollbar` reports the stack trace of the location that the
 error was reported, not created.
 
+NOTE: This is a clone of [http://github.com/stvp/rollbar]() extended to support
+use on Google AppEngine.
+
 Documentation
 =============
 
-[API docs on godoc.org](http://godoc.org/github.com/stvp/rollbar)
+[API docs on godoc.org](http://godoc.org/github.com/radomirml/rollbar)
 
 Usage
 =====
@@ -36,6 +39,12 @@ Usage
 
       rollbar.Wait()
     }
+
+On Google AppEngine, instead of invoking rollbar package functions directly, create a
+client passing *http.Request:
+
+    rollbar.NewGaeClient(r).Error("error", err)
+
 
 Changelog
 =========
