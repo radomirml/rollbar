@@ -364,29 +364,6 @@ func (c *Client) buildAndPushError(level string, err error, stack Stack, fields 
 	go post(buildError(level, err, stack, fields...), c.httpClient)
 }
 
-//func (c *Client) Error(level string, err error) {
-//	c.ErrorWithStackSkip(level, err, 1)
-//}
-//
-//func (c *Client) ErrorWithStackSkip(level string, err error, skip int) {
-//
-//	body := buildBody(level, err.Error())
-//	data := body["data"].(map[string]interface{})
-//	errBody, fingerprint := errorBody(err, skip)
-//	data["body"] = errBody
-//	data["fingerprint"] = fingerprint
-//
-//	go post(body, c.httpClient)
-//}
-//
-//func (c *Client) Message(level string, msg string) {
-//
-//	body := buildBody(level, msg)
-//	data := body["data"].(map[string]interface{})
-//	data["body"] = messageBody(msg)
-//
-//	go post(body, c.httpClient)
-//}
 
 // -- stderr
 func stderr(format string, args ...interface{}) {
