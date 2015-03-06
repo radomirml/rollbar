@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"hash/adler32"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,7 +18,7 @@ import (
 
 const (
 	NAME    = "go-rollbar"
-	VERSION = "0.1.0"
+	VERSION = "0.3.1"
 
 	// Severity levels
 	CRIT  = "critical"
@@ -24,6 +26,8 @@ const (
 	WARN  = "warning"
 	INFO  = "info"
 	DEBUG = "debug"
+
+	FILTERED = "[FILTERED]"
 )
 
 var (
@@ -34,6 +38,9 @@ var (
 	// All errors and messages will be submitted under this environment.
 	Environment = "development"
 
+	// Platform, default to OS, but could be change ('client' for instance)
+	Platform = runtime.GOOS
+
 	// API endpoint for Rollbar.
 	Endpoint = "https://api.rollbar.com/api/1/item/"
 
@@ -41,10 +48,22 @@ var (
 	// dropping new errors on the floor.
 	Buffer = 1000
 
+	// Filter GET and POST parameters from being sent to Rollbar.
+	FilterFields = regexp.MustCompile("password|secret|token")
+
+	// Output of error, by default stderr
+	ErrorWriter = os.Stderr
+
 	// Queue of messages to be sent.
 	bodyChannel chan map[string]interface{}
 	waitGroup   sync.WaitGroup
 )
+
+// Fields can be used to pass arbitrary data to the Rollbar API.
+type Field struct {
+	Name string
+	Data interface{}
+}
 
 // -- Setup
 
@@ -61,27 +80,72 @@ func init() {
 
 // -- Error reporting
 
-// Error asynchronously sends an error to Rollbar with the given severity level.
-func Error(level string, err error) {
-	ErrorWithStackSkip(level, err, 1)
+// Error asynchronously sends an error to Rollbar with the given severity
+// level. You can pass, optionally, custom Fields to be passed on to Rollbar.
+func Error(level string, err error, fields ...*Field) {
+	ErrorWithStackSkip(level, err, 1, fields...)
 }
 
 // ErrorWithStackSkip asynchronously sends an error to Rollbar with the given
-// severity level and a given number of stack trace frames skipped.
-func ErrorWithStackSkip(level string, err error, skip int) {
+// severity level and a given number of stack trace frames skipped. You can
+// pass, optionally, custom Fields to be passed on to Rollbar.
+func ErrorWithStackSkip(level string, err error, skip int, fields ...*Field) {
+	stack := BuildStack(2 + skip)
+	ErrorWithStack(level, err, stack, fields...)
+}
+
+// ErrorWithStack asynchronously sends and error to Rollbar with the given
+// stacktrace and (optionally) custom Fields to be passed on to Rollbar.
+func ErrorWithStack(level string, err error, stack Stack, fields ...*Field) {
+	buildAndPushError(level, err, stack, fields...)
+}
+
+// RequestError asynchronously sends an error to Rollbar with the given
+// severity level and request-specific information. You can pass, optionally,
+// custom Fields to be passed on to Rollbar.
+func RequestError(level string, r *http.Request, err error, fields ...*Field) {
+	RequestErrorWithStackSkip(level, r, err, 1, fields...)
+}
+
+// RequestErrorWithStackSkip asynchronously sends an error to Rollbar with the
+// given severity level and a given number of stack trace frames skipped, in
+// addition to extra request-specific information. You can pass, optionally,
+// custom Fields to be passed on to Rollbar.
+func RequestErrorWithStackSkip(level string, r *http.Request, err error, skip int, fields ...*Field) {
+	stack := BuildStack(2 + skip)
+	RequestErrorWithStack(level, r, err, stack, fields...)
+}
+
+// RequestErrorWithStack asynchronously sends an error to Rollbar with the
+// given severity level, request-specific information provided by the given
+// http.Request, and a custom Stack. You You can pass, optionally, custom
+// Fields to be passed on to Rollbar.
+func RequestErrorWithStack(level string, r *http.Request, err error, stack Stack, fields ...*Field) {
+	buildAndPushError(level, err, stack, &Field{Name: "request", Data: errorRequest(r)})
+}
+
+func buildError(level string, err error, stack Stack, fields ...*Field) map[string]interface{} {
 	body := buildBody(level, err.Error())
 	data := body["data"].(map[string]interface{})
-	errBody, fingerprint := errorBody(err, skip)
+	errBody, fingerprint := errorBody(err, stack)
 	data["body"] = errBody
 	data["fingerprint"] = fingerprint
 
-	push(body)
+	for _, field := range fields {
+		data[field.Name] = field.Data
+	}
+
+	return body
+}
+
+func buildAndPushError(level string, err error, stack Stack, fields ...*Field) {
+	push(buildError(level, err, stack, fields...))
 }
 
 // -- Message reporting
 
 // Message asynchronously sends a message to Rollbar with the given severity
-// level. Rollbar request is asynchronous.
+// level.
 func Message(level string, msg string) {
 	body := buildBody(level, msg)
 	data := body["data"].(map[string]interface{})
@@ -92,7 +156,9 @@ func Message(level string, msg string) {
 
 // -- Misc.
 
-// Wait will block until the queue of errors / messages is empty.
+// Wait will block until the queue of errors / messages is empty. This allows
+// you to ensure that errors / messages are sent to Rollbar before exiting an
+// application.
 func Wait() {
 	waitGroup.Wait()
 }
@@ -110,7 +176,7 @@ func buildBody(level, title string) map[string]interface{} {
 			"title":       title,
 			"level":       level,
 			"timestamp":   timestamp,
-			"platform":    runtime.GOOS,
+			"platform":    Platform,
 			"language":    "go",
 			"server": map[string]interface{}{
 				"host": hostname,
@@ -123,10 +189,8 @@ func buildBody(level, title string) map[string]interface{} {
 	}
 }
 
-// Build an error inner-body for the given error. If skip is provided, that
-// number of stack trace frames will be skipped.
-func errorBody(err error, skip int) (map[string]interface{}, string) {
-	stack := BuildStack(3 + skip)
+// errorBody generates a Rollbar error body with a given stack trace.
+func errorBody(err error, stack Stack) (map[string]interface{}, string) {
 	fingerprint := stack.Fingerprint()
 	errBody := map[string]interface{}{
 		"trace": map[string]interface{}{
@@ -138,6 +202,51 @@ func errorBody(err error, skip int) (map[string]interface{}, string) {
 		},
 	}
 	return errBody, fingerprint
+}
+
+// errorRequest extracts details from a Request in a format that Rollbar
+// accepts.
+func errorRequest(r *http.Request) map[string]interface{} {
+	cleanQuery := filterParams(r.URL.Query())
+
+	return map[string]interface{}{
+		"url":     r.URL.String(),
+		"method":  r.Method,
+		"headers": flattenValues(r.Header),
+
+		// GET params
+		"query_string": url.Values(cleanQuery).Encode(),
+		"GET":          flattenValues(cleanQuery),
+
+		// POST / PUT params
+		"POST": flattenValues(filterParams(r.Form)),
+	}
+}
+
+// filterParams filters sensitive information like passwords from being sent to
+// Rollbar.
+func filterParams(values map[string][]string) map[string][]string {
+	for key, _ := range values {
+		if FilterFields.Match([]byte(key)) {
+			values[key] = []string{FILTERED}
+		}
+	}
+
+	return values
+}
+
+func flattenValues(values map[string][]string) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	for k, v := range values {
+		if len(v) == 1 {
+			result[k] = v[0]
+		} else {
+			result[k] = v
+		}
+	}
+
+	return result
 }
 
 // Build a message inner-body for the given message string.
@@ -232,8 +341,9 @@ func (c *Client) Message(level string, msg string) {
 }
 
 // -- stderr
-
 func stderr(format string, args ...interface{}) {
-	format = "Rollbar error: " + format + "\n"
-	fmt.Fprintf(os.Stderr, format, args...)
+	if ErrorWriter != nil {
+		format = "Rollbar error: " + format + "\n"
+		fmt.Fprintf(ErrorWriter, format, args...)
+	}
 }
