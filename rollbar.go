@@ -316,29 +316,77 @@ type Client struct {
 	httpClient *http.Client
 }
 
-func (c *Client) Error(level string, err error) {
-	c.ErrorWithStackSkip(level, err, 1)
+// Error asynchronously sends an error to Rollbar with the given severity
+// level. You can pass, optionally, custom Fields to be passed on to Rollbar.
+func (c *Client) Error(level string, err error, fields ...*Field) {
+	c.ErrorWithStackSkip(level, err, 1, fields...)
 }
 
-func (c *Client) ErrorWithStackSkip(level string, err error, skip int) {
-
-	body := buildBody(level, err.Error())
-	data := body["data"].(map[string]interface{})
-	errBody, fingerprint := errorBody(err, skip)
-	data["body"] = errBody
-	data["fingerprint"] = fingerprint
-
-	go post(body, c.httpClient)
+// ErrorWithStackSkip asynchronously sends an error to Rollbar with the given
+// severity level and a given number of stack trace frames skipped. You can
+// pass, optionally, custom Fields to be passed on to Rollbar.
+func (c *Client) ErrorWithStackSkip(level string, err error, skip int, fields ...*Field) {
+	stack := BuildStack(2 + skip)
+	c.ErrorWithStack(level, err, stack, fields...)
 }
 
-func (c *Client) Message(level string, msg string) {
-
-	body := buildBody(level, msg)
-	data := body["data"].(map[string]interface{})
-	data["body"] = messageBody(msg)
-
-	go post(body, c.httpClient)
+// ErrorWithStack asynchronously sends and error to Rollbar with the given
+// stacktrace and (optionally) custom Fields to be passed on to Rollbar.
+func (c *Client) ErrorWithStack(level string, err error, stack Stack, fields ...*Field) {
+	c.buildAndPushError(level, err, stack, fields...)
 }
+
+// RequestError asynchronously sends an error to Rollbar with the given
+// severity level and request-specific information. You can pass, optionally,
+// custom Fields to be passed on to Rollbar.
+func (c *Client) RequestError(level string, r *http.Request, err error, fields ...*Field) {
+	c.RequestErrorWithStackSkip(level, r, err, 1, fields...)
+}
+
+// RequestErrorWithStackSkip asynchronously sends an error to Rollbar with the
+// given severity level and a given number of stack trace frames skipped, in
+// addition to extra request-specific information. You can pass, optionally,
+// custom Fields to be passed on to Rollbar.
+func (c *Client) RequestErrorWithStackSkip(level string, r *http.Request, err error, skip int, fields ...*Field) {
+	stack := BuildStack(2 + skip)
+	c.RequestErrorWithStack(level, r, err, stack, fields...)
+}
+
+// RequestErrorWithStack asynchronously sends an error to Rollbar with the
+// given severity level, request-specific information provided by the given
+// http.Request, and a custom Stack. You You can pass, optionally, custom
+// Fields to be passed on to Rollbar.
+func (c *Client) RequestErrorWithStack(level string, r *http.Request, err error, stack Stack, fields ...*Field) {
+	c.buildAndPushError(level, err, stack, &Field{Name: "request", Data: errorRequest(r)})
+}
+
+func (c *Client) buildAndPushError(level string, err error, stack Stack, fields ...*Field) {
+	go post(buildError(level, err, stack, fields...), c.httpClient)
+}
+
+//func (c *Client) Error(level string, err error) {
+//	c.ErrorWithStackSkip(level, err, 1)
+//}
+//
+//func (c *Client) ErrorWithStackSkip(level string, err error, skip int) {
+//
+//	body := buildBody(level, err.Error())
+//	data := body["data"].(map[string]interface{})
+//	errBody, fingerprint := errorBody(err, skip)
+//	data["body"] = errBody
+//	data["fingerprint"] = fingerprint
+//
+//	go post(body, c.httpClient)
+//}
+//
+//func (c *Client) Message(level string, msg string) {
+//
+//	body := buildBody(level, msg)
+//	data := body["data"].(map[string]interface{})
+//	data["body"] = messageBody(msg)
+//
+//	go post(body, c.httpClient)
+//}
 
 // -- stderr
 func stderr(format string, args ...interface{}) {
